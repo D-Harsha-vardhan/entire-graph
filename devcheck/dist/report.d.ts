@@ -25,9 +25,10 @@ export declare function parseImpactOutput(raw: string, targetSymbol: string): {
     summary: string;
     confidence: Confidence;
     warnings: string[];
+    isPartialAnalysis: boolean;
 };
 /**
  * Try to extract a canonical symbol name from graph search JSON output.
  */
 export declare function extractSymbolFromSearch(searchOutput: string): string | null;
-export declare function buildRecommendedChecks(affectedItems: AffectedItem[], target: string): RecommendedCheck[];
+export declare function buildRecommendedChecks(affectedItems: AffectedItem[], target: string, isPartialAnalysis: boolean): RecommendedCheck[];

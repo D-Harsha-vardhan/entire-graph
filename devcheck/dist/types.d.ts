@@ -30,6 +30,8 @@ export interface AffectedItem {
     relationship: string;
     /** Source location if known (e.g. "mux.go:203"). */
     location: string | null;
+    /** Distinction between hard structural facts, heuristics, and partial data */
+    evidenceType: "confirmed" | "heuristic" | "requires_verification";
 }
 export interface RecommendedCheck {
     /** A human-readable action the developer should take. */
@@ -52,6 +54,8 @@ export interface ImpactReport {
     confidence: Confidence;
     /** Any warnings about incomplete or uncertain results. */
     warnings: string[];
+    /** Flag indicating if the analysis hit unresolved patterns (dynamic dispatch, reflection) */
+    isPartialAnalysis: boolean;
 }
 export interface GraphCommandResult {
     success: boolean;

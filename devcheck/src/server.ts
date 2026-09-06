@@ -204,7 +204,11 @@ server.tool(
     const parsed = parseImpactOutput(impactRaw, resolvedSymbol);
 
     // 5. Build recommended checks
-    const recommendedChecks = buildRecommendedChecks(parsed.affectedItems, resolvedSymbol);
+    const recommendedChecks = buildRecommendedChecks(
+      parsed.affectedItems, 
+      resolvedSymbol,
+      parsed.isPartialAnalysis
+    );
 
     // 6. Assemble the full report
     const report: ImpactReport = {
@@ -215,6 +219,7 @@ server.tool(
       evidence,
       confidence: parsed.confidence,
       warnings: [...parsed.warnings, ...warnings],
+      isPartialAnalysis: parsed.isPartialAnalysis,
     };
 
     return { content: [{ type: "text", text: formatImpactReport(report) }] };
