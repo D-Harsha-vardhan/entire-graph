@@ -153,7 +153,7 @@ server.tool("check_change_impact", "Analyze the potential impact of changing a f
     const impactRaw = impactResult.success ? impactResult.stdout : "";
     const parsed = parseImpactOutput(impactRaw, resolvedSymbol);
     // 5. Build recommended checks
-    const recommendedChecks = buildRecommendedChecks(parsed.affectedItems, resolvedSymbol);
+    const recommendedChecks = buildRecommendedChecks(parsed.affectedItems, resolvedSymbol, parsed.isPartialAnalysis);
     // 6. Assemble the full report
     const report = {
         target: resolvedSymbol,
@@ -163,6 +163,7 @@ server.tool("check_change_impact", "Analyze the potential impact of changing a f
         evidence,
         confidence: parsed.confidence,
         warnings: [...parsed.warnings, ...warnings],
+        isPartialAnalysis: parsed.isPartialAnalysis,
     };
     return { content: [{ type: "text", text: formatImpactReport(report) }] };
 });
