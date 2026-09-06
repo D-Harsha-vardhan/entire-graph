@@ -147,6 +147,32 @@ Blast radius: 0 callers.`;
     const result = parseImpactOutput(raw, "foo");
     expect(result.warnings.some((w) => w.includes("cold cache"))).toBe(true);
   });
+
+  it("handles unresolved patterns by setting isPartialAnalysis and downgrading confidence", () => {
+    const raw = `Impact: pluginLoader (plugin.ts:1)
+Blast radius: 1 caller
+Callers:
+- unresolved caller (dynamic dispatch)`;
+    const result = parseImpactOutput(raw, "pluginLoader");
+    expect(result.isPartialAnalysis).toBe(true);
+    expect(result.confidence).toBe("low");
+    expect(result.affectedItems[0].evidenceType).toBe("requires_verification");
+  });
+
+  it("sets correct evidence types for confirmed and heuristic relationships", () => {
+    const raw = `Impact: format (utils.ts:5)
+Blast radius: 1 caller, 1 co-change
+Callers:
+- display (ui.ts:10)
+Co-change files:
+- index.ts`;
+    const result = parseImpactOutput(raw, "format");
+    expect(result.isPartialAnalysis).toBe(false);
+    const callers = result.affectedItems.filter(i => i.relationship === "caller");
+    const cochanges = result.affectedItems.filter(i => i.relationship === "co-change file");
+    expect(callers[0].evidenceType).toBe("confirmed");
+    expect(cochanges[0].evidenceType).toBe("heuristic");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -177,26 +203,34 @@ describe("extractSymbolFromSearch", () => {
 describe("buildRecommendedChecks", () => {
   it("recommends reviewing callers when callers exist", () => {
     const items: AffectedItem[] = [
-      { name: "handleLogin", reason: "calls target", relationship: "caller", location: "login.ts:10" },
-      { name: "handleRegister", reason: "calls target", relationship: "caller", location: "register.ts:5" },
+      { name: "handleLogin", reason: "calls target", relationship: "caller", location: "login.ts:10", evidenceType: "confirmed" },
+      { name: "handleRegister", reason: "calls target", relationship: "caller", location: "register.ts:5", evidenceType: "confirmed" },
     ];
-    const checks = buildRecommendedChecks(items, "authenticate");
+    const checks = buildRecommendedChecks(items, "authenticate", false);
     expect(checks.some((c) => c.action.includes("caller"))).toBe(true);
     expect(checks.some((c) => c.action.includes("2"))).toBe(true);
   });
 
   it("recommends running test suite when test files found", () => {
     const items: AffectedItem[] = [
-      { name: "authTest", reason: "calls target", relationship: "caller", location: "auth.test.ts:10" },
+      { name: "authTest", reason: "calls target", relationship: "caller", location: "auth.test.ts:10", evidenceType: "confirmed" },
     ];
-    const checks = buildRecommendedChecks(items, "login");
+    const checks = buildRecommendedChecks(items, "login", false);
     expect(checks.some((c) => c.action.toLowerCase().includes("test suite"))).toBe(true);
   });
 
-  it("always includes manual search and full test suite recommendations", () => {
-    const checks = buildRecommendedChecks([], "anything");
+  it("always includes manual search and full test suite recommendations when analysis is complete", () => {
+    const checks = buildRecommendedChecks([], "anything", false);
     expect(checks.some((c) => c.action.includes("Search for usages"))).toBe(true);
     expect(checks.some((c) => c.action.includes("full project test suite"))).toBe(true);
+  });
+
+  it("includes strong fallbacks when analysis is partial", () => {
+    const checks = buildRecommendedChecks([], "dynamicTarget", true);
+    expect(checks.some((c) => c.action.includes("Fallback: Perform a full-text search"))).toBe(true);
+    expect(checks.some((c) => c.action.includes("Fallback: Run the complete E2E test suite"))).toBe(true);
+    // Should NOT include the generic manual search recommendation since the specific fallback replaces it
+    expect(checks.some((c) => c.action === "Search for usages of `dynamicTarget` in the codebase")).toBe(false);
   });
 });
 
@@ -205,7 +239,7 @@ describe("buildRecommendedChecks", () => {
 // ---------------------------------------------------------------------------
 
 describe("formatImpactReport", () => {
-  it("uses hedging language throughout", () => {
+  it("uses hedging language throughout and renders badges", () => {
     const report: ImpactReport = {
       target: "processPayment",
       summary: "Changing `processPayment` may affect payment processing.",
@@ -215,6 +249,7 @@ describe("formatImpactReport", () => {
           reason: "`handleCheckout` calls `processPayment` and may break.",
           relationship: "caller",
           location: "checkout.ts:20",
+          evidenceType: "confirmed",
         },
       ],
       recommendedChecks: [{ action: "Run payment tests", why: "Connected to target" }],
@@ -225,12 +260,14 @@ describe("formatImpactReport", () => {
       }],
       confidence: "medium",
       warnings: [],
+      isPartialAnalysis: false,
     };
     const output = formatImpactReport(report);
 
-    // Check hedging
+    // Check hedging and badges
     expect(output).toContain("may");
     expect(output).toContain("Possible Affected Areas");
+    expect(output).toContain("🟢 [CONFIRMED]");
 
     // Check structure
     expect(output).toContain("Change Impact Report");
@@ -249,11 +286,29 @@ describe("formatImpactReport", () => {
       evidence: [],
       confidence: "low",
       warnings: ["Graph found nothing."],
+      isPartialAnalysis: false,
     };
     const output = formatImpactReport(report);
     expect(output).toContain("No direct relationships found");
     expect(output).toContain("Manual review");
     expect(output).toContain("Warnings");
+  });
+
+  it("renders the incomplete analysis warning block", () => {
+    const report: ImpactReport = {
+      target: "pluginSystem",
+      summary: "May affect plugins.",
+      affectedItems: [],
+      recommendedChecks: [],
+      evidence: [],
+      confidence: "low",
+      warnings: [],
+      isPartialAnalysis: true,
+    };
+    const output = formatImpactReport(report);
+    expect(output).toContain("[!WARNING]");
+    expect(output).toContain("Incomplete Analysis Detected");
+    expect(output).toContain("unresolved patterns");
   });
 
   it("always includes the verification reminder", () => {
@@ -265,6 +320,7 @@ describe("formatImpactReport", () => {
       evidence: [],
       confidence: "unknown",
       warnings: [],
+      isPartialAnalysis: false,
     };
     const output = formatImpactReport(report);
     expect(output).toContain("Verification Required");

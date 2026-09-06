@@ -82,7 +82,11 @@ export function formatImpactReport(report: ImpactReport): string {
     lines.push("");
     for (const item of report.affectedItems) {
       const loc = item.location ? ` (${item.location})` : "";
-      lines.push(`- **\`${item.name}\`**${loc}`);
+      const badge = item.evidenceType === "confirmed" ? "🟢 [CONFIRMED]" 
+                  : item.evidenceType === "heuristic" ? "🟡 [HEURISTIC]" 
+                  : "🔴 [NEEDS VERIFICATION]";
+      
+      lines.push(`- **\`${item.name}\`**${loc} ${badge}`);
       lines.push(`  - Relationship: ${item.relationship}`);
       lines.push(`  - Why: ${item.reason}`);
     }
@@ -94,6 +98,14 @@ export function formatImpactReport(report: ImpactReport): string {
     lines.push("- The target has no callers or dependents in the analyzed scope");
     lines.push("- Graph coverage does not include this target's language or file type");
     lines.push("- Manual review is recommended");
+    lines.push("");
+  }
+
+  // Partial Analysis Warning
+  if (report.isPartialAnalysis) {
+    lines.push("> [!WARNING]");
+    lines.push("> **Incomplete Analysis Detected**");
+    lines.push("> Entire Graph detected unresolved patterns (e.g., dynamic dispatch, generated code, or reflection). Some relationships may be missing or require manual verification. Please follow the fallback recommended checks.");
     lines.push("");
   }
 
@@ -176,11 +188,21 @@ export function parseImpactOutput(
   summary: string;
   confidence: Confidence;
   warnings: string[];
+  isPartialAnalysis: boolean;
 } {
   const affectedItems: AffectedItem[] = [];
   const warnings: string[] = [];
   let summary = `Changing \`${targetSymbol}\` may affect the items listed below.`;
   let confidence: Confidence = "medium";
+  
+  // Detect unresolved/partial analysis keywords
+  const rawLower = raw.toLowerCase();
+  const isPartialAnalysis = 
+    rawLower.includes("unresolved") || 
+    rawLower.includes("dynamic dispatch") || 
+    rawLower.includes("reflection") || 
+    rawLower.includes("partial") || 
+    rawLower.includes("incomplete");
 
   if (!raw || raw.trim().length === 0) {
     return {
@@ -188,6 +210,7 @@ export function parseImpactOutput(
       summary: `No Graph impact data found for \`${targetSymbol}\`. Manual review is recommended.`,
       confidence: "unknown",
       warnings: ["Entire Graph returned no output for this target. The symbol may not exist in the graph index, or the language may not be supported."],
+      isPartialAnalysis: false,
     };
   }
 
@@ -202,6 +225,7 @@ export function parseImpactOutput(
   // Current section tracker
   let currentSection = "";
   let currentRelationship = "";
+  let currentEvidenceType: "confirmed" | "heuristic" | "requires_verification" = "confirmed";
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -211,37 +235,50 @@ export function parseImpactOutput(
     if (trimmed.startsWith("Callers")) {
       currentSection = "callers";
       currentRelationship = "caller";
+      currentEvidenceType = isPartialAnalysis ? "requires_verification" : "confirmed";
       continue;
     }
     if (trimmed.startsWith("Callees")) {
       currentSection = "callees";
       currentRelationship = "callee";
+      currentEvidenceType = isPartialAnalysis ? "requires_verification" : "confirmed";
       continue;
     }
     if (trimmed.startsWith("Type consumers") || trimmed.startsWith("Type Consumers")) {
       currentSection = "type-consumers";
       currentRelationship = "type consumer";
+      currentEvidenceType = isPartialAnalysis ? "requires_verification" : "confirmed";
       continue;
     }
-    if (trimmed.startsWith("Data flow") || trimmed.startsWith("Data Flow")) {
+    if (trimmed.startsWith("Data flow") || trimmed.startsWith("Data Flow") || trimmed.startsWith("Data flows")) {
       currentSection = "data-flow";
       currentRelationship = "data flow";
+      currentEvidenceType = isPartialAnalysis ? "requires_verification" : "confirmed";
       continue;
     }
     if (trimmed.startsWith("Co-change") || trimmed.startsWith("Related files")) {
       currentSection = "co-change";
       currentRelationship = "co-change file";
+      currentEvidenceType = "heuristic"; // Co-change is always heuristic
       continue;
     }
     if (trimmed.startsWith("Siblings") || trimmed.startsWith("Same-container")) {
       currentSection = "siblings";
       currentRelationship = "sibling in same container";
+      currentEvidenceType = "heuristic"; // Siblings are heuristic for impact
       continue;
     }
 
     // Parse items (lines starting with "- ")
     if (trimmed.startsWith("- ") && currentSection) {
       const itemText = trimmed.slice(2);
+      
+      // Check if this specific line has a partial warning
+      let itemEvidenceType = currentEvidenceType;
+      if (itemText.toLowerCase().includes("unresolved") || itemText.toLowerCase().includes("dynamic")) {
+        itemEvidenceType = "requires_verification";
+      }
+
       const match = itemText.match(/^(\S+)\s*\(([^)]+)\)/);
       if (match) {
         const name = match[1];
@@ -251,6 +288,7 @@ export function parseImpactOutput(
           reason: buildReason(currentRelationship, name, targetSymbol),
           relationship: currentRelationship,
           location,
+          evidenceType: itemEvidenceType,
         });
       } else {
         affectedItems.push({
@@ -258,13 +296,16 @@ export function parseImpactOutput(
           reason: buildReason(currentRelationship, itemText, targetSymbol),
           relationship: currentRelationship,
           location: null,
+          evidenceType: itemEvidenceType,
         });
       }
     }
   }
 
   // Set confidence based on data quality
-  if (affectedItems.length === 0) {
+  if (isPartialAnalysis) {
+    confidence = "low";
+  } else if (affectedItems.length === 0) {
     confidence = "low";
     warnings.push(
       "Graph found no direct relationships. The target may be a leaf node, or Graph coverage may be incomplete.",
@@ -280,7 +321,7 @@ export function parseImpactOutput(
     );
   }
 
-  return { affectedItems, summary, confidence, warnings };
+  return { affectedItems, summary, confidence, warnings, isPartialAnalysis };
 }
 
 function buildReason(
@@ -340,8 +381,20 @@ export function extractSymbolFromSearch(searchOutput: string): string | null {
 export function buildRecommendedChecks(
   affectedItems: AffectedItem[],
   target: string,
+  isPartialAnalysis: boolean,
 ): RecommendedCheck[] {
   const checks: RecommendedCheck[] = [];
+
+  if (isPartialAnalysis) {
+    checks.push({
+      action: "Fallback: Perform a full-text search (grep) across the repository",
+      why: "Graph structural analysis is incomplete due to unresolved patterns (e.g., dynamic dispatch). Text search can catch dynamic or reflection-based references.",
+    });
+    checks.push({
+      action: "Fallback: Run the complete E2E test suite",
+      why: "Since structural impact is incomplete, end-to-end tests provide a safety net for unmapped dependencies.",
+    });
+  }
 
   // Check if any callers exist
   const callers = affectedItems.filter((i) => i.relationship === "caller");
@@ -367,10 +420,12 @@ export function buildRecommendedChecks(
   }
 
   // General recommendation
-  checks.push({
-    action: `Search for usages of \`${target}\` in the codebase`,
-    why: "Graph may not capture every usage. A manual text search can catch dynamic references, string-based lookups, or reflection-based calls.",
-  });
+  if (!isPartialAnalysis) {
+    checks.push({
+      action: `Search for usages of \`${target}\` in the codebase`,
+      why: "Graph may not capture every usage. A manual text search can catch dynamic references, string-based lookups, or reflection-based calls.",
+    });
+  }
 
   checks.push({
     action: "Run the full project test suite",
